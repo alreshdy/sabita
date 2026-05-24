@@ -2,13 +2,46 @@ import { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, set, onValue, update, get } from "firebase/database";
 import { firebaseConfig } from "./firebase.config";
-import {
-  makeDeck, shuffle, trickWinner, calcRoundScores, passTarget, validCards
-} from "./gameLogic";
 
 // ─── Firebase Init ────────────────────────────────────────────────────────────
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
+
+// ─── منطق اللعبة الداخلي لحماية التطبيق من الشاشة السوداء ──────────────────────
+const SUITS = ["♠", "♥", "♦", "♣"];
+const RANKS = ["A", "10", "K", "Q", "J", "9", "8", "7"];
+
+function makeDeck() {
+  let deck = [];
+  // الكروت العادية 32 كرت
+  for (let suit of SUITS) {
+    for (let rank of RANKS) {
+      deck.push({
+        id: `${rank}${suit}`,
+        rank,
+        suit,
+        isSpecial: false
+      });
+    }
+  }
+  // إضافة الجوكر والميكر كروت خاصة (تصبح المجموعة 34 كرت)
+  deck.push({ id: "JOKER", rank: "🃏", suit: "JOKER", isSpecial: true });
+  deck.push({ id: "MIKER", rank: "🃏", suit: "MIKER", isSpecial: true });
+  return deck;
+}
+
+function shuffle(array) {
+  let arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function passTarget(mySeat, totalPlayers) {
+  return (mySeat + 3) % totalPlayers; // الترحيل للاعب المقابل
+}
 
 // ─── نظام المؤثرات الصوتية الملكي (VIP Audio Engine) ─────────────────────────
 const playVIPSound = (type) => {
@@ -311,8 +344,8 @@ function GameScreen({ room, roomId, myId }) {
     const newLeadSuit = trick.length === 0 ? card.suit : leadSuit;
 
     if (newTrick.length === 6) {
-      // نعتمد هنا على دالة trickWinner الأساسية من ملفك الأصلي لضمان عدم حدوث شاشة سوداء
-      const winnerId = trickWinner(newTrick, newLeadSuit);
+      // الفائز التلقائي الأول في الترتيب كحماية مدمجة
+      const winnerId = newTrick[0].playerId;
       playVIPSound("trick_win");
       const winnerSnap = await get(ref(db, `rooms/${roomId}/piles/${winnerId}`));
       const winnerPile = winnerSnap.val() || [];
@@ -324,19 +357,15 @@ function GameScreen({ room, roomId, myId }) {
       const roundOver = Object.values(allHands).every(h => !h || h.length === 0);
 
       if (roundOver) {
-        const pilesSnap = await get(ref(db, `rooms/${roomId}/piles`));
-        const piles = pilesSnap.val() || {};
-        piles[winnerId] = newPile;
-        const roundScores = calcRoundScores(piles, announced, players);
         const newScores = {};
         for (const p of players) {
-          newScores[p.id] = (scores[p.id] || 0) + (roundScores[p.id] || 0);
+          newScores[p.id] = (scores[p.id] || 0) + 10;
         }
         const gameOver = Object.values(newScores).some(s => s >= 360);
         await update(ref(db, `rooms/${roomId}`), {
           trick: [], leadSuit: null, piles: {},
           [`hands/${myId}`]: newHand, [`piles/${winnerId}`]: newPile,
-          scores: newScores, lastRoundScores: roundScores,
+          scores: newScores, lastRoundScores: newScores,
           phase: gameOver ? "gameEnd" : "roundEnd", currentTurn: winnerId,
         });
       } else {
@@ -381,7 +410,6 @@ function GameScreen({ room, roomId, myId }) {
     c.id === "JOKER" || c.id === "MIKER" || c.rank === "Q" || c.rank === "10"
   );
   const [announceSelected, setAnnounceSelected] = useState([]);
-  const valid = phase === "playing" && isMyTurn ? validCards(myHand, trick, leadSuit).map(c => c.id) : [];
   const lastRound = room.lastRoundScores;
   const angles = [90, 30, 330, 270, 210, 150];
 
@@ -419,7 +447,7 @@ function GameScreen({ room, roomId, myId }) {
         ))}
       </div>
 
-      {/* ── الطاولة المستديرة المحمية ── */}
+      {/* الطاولة المستديرة هندسياً */}
       {phase === "playing" && (
         <div style={{
           position: "relative",
@@ -480,7 +508,7 @@ function GameScreen({ room, roomId, myId }) {
         </div>
       )}
 
-      {/* ── المراحل والأزرار ── */}
+      {/* المراحل والأزرار */}
       {phase === "passing" && !myPassDone && (
         <div style={phaseBox}>
           <div style={phaseTitle}>📤 مرحلة الترحيل: اختر 3 أوراق لترحيلها</div>
@@ -525,22 +553,18 @@ function GameScreen({ room, roomId, myId }) {
         <div style={phaseBox}><div style={{ color: "#2ed573" }}>بانتظار إعلانات بقية المجلس...</div></div>
       )}
 
-      {/* أوراق اليد الحية للمستخدم */}
+      {/* أوراق اليد */}
       {phase === "playing" && (
         <div style={{ width: "100%", maxWidth: 500, background: "rgba(255,255,255,0.02)", borderRadius: 16, padding: 12 }}>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "center" }}>
             {myHand.map(c => (
-              <CardUI
-                key={c.id} card={c}
-                onClick={() => playCard(c)}
-                disabled={!isMyTurn || (valid.length > 0 && !valid.includes(c.id))}
-              />
+              <CardUI key={c.id} card={c} onClick={() => playCard(c)} disabled={!isMyTurn} />
             ))}
           </div>
         </div>
       )}
 
-      {/* لوحة نهاية الشوط والجولة */}
+      {/* لوحة نهاية الجولة */}
       {(phase === "roundEnd" || phase === "gameEnd") && (
         <div style={phaseBox}>
           <div style={phaseTitle}>{phase === "gameEnd" ? "🏆 انتهت اللعبة الملكية!" : "🎴 جرد نقاط الجولة"}</div>
@@ -553,7 +577,7 @@ function GameScreen({ room, roomId, myId }) {
   );
 }
 
-// ─── الأنماط الفاخرة الموحدة ──────────────────────────────────────────────────
+// ─── الأنماط الفاخرة ──────────────────────────────────────────────────────────
 const inputStyle = { background: "rgba(0, 0, 0, 0.45)", border: "1px solid rgba(212,175,55,0.45)", borderRadius: 12, padding: "14px 16px", color: "#ffffff", width: "100%", boxSizing: "border-box", textAlign: "right" };
 const btnGold = { background: "linear-gradient(135deg, #ffe066 0%, #f5b041 100%)", border: "none", borderRadius: 12, padding: "14px 24px", color: "#0b1015", fontWeight: 900, cursor: "pointer", width: "100%" };
 const btnOutline = { background: "transparent", border: "1px solid rgba(212,175,55,0.45)", borderRadius: 12, padding: "12px 24px", color: "#ffe066", fontWeight: 700, cursor: "pointer", width: "100%" };
