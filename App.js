@@ -7,24 +7,17 @@ import { firebaseConfig } from "./firebase.config";
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ─── منطق اللعبة الداخلي لحماية التطبيق من الشاشة السوداء ──────────────────────
+// ─── منطق اللعبة المدمج لحماية التطبيق من الانهيار ──────────────────────────────
 const SUITS = ["♠", "♥", "♦", "♣"];
 const RANKS = ["A", "10", "K", "Q", "J", "9", "8", "7"];
 
 function makeDeck() {
   let deck = [];
-  // الكروت العادية 32 كرت
   for (let suit of SUITS) {
     for (let rank of RANKS) {
-      deck.push({
-        id: `${rank}${suit}`,
-        rank,
-        suit,
-        isSpecial: false
-      });
+      deck.push({ id: `${rank}${suit}`, rank, suit, isSpecial: false });
     }
   }
-  // إضافة الجوكر والميكر كروت خاصة (تصبح المجموعة 34 كرت)
   deck.push({ id: "JOKER", rank: "🃏", suit: "JOKER", isSpecial: true });
   deck.push({ id: "MIKER", rank: "🃏", suit: "MIKER", isSpecial: true });
   return deck;
@@ -40,10 +33,9 @@ function shuffle(array) {
 }
 
 function passTarget(mySeat, totalPlayers) {
-  return (mySeat + 3) % totalPlayers; // الترحيل للاعب المقابل
+  return (mySeat + 3) % totalPlayers;
 }
 
-// ─── نظام المؤثرات الصوتية الملكي (VIP Audio Engine) ─────────────────────────
 const playVIPSound = (type) => {
   try {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -91,7 +83,6 @@ const playVIPSound = (type) => {
   }
 };
 
-// ─── Card Component ───────────────────────────────────────────────────────────
 function CardUI({ card, selected, onClick, disabled, small, faceDown, announced }) {
   if (!card) return null;
   const isRed = card.suit === "♥" || card.suit === "♦";
@@ -153,7 +144,6 @@ function CardUI({ card, selected, onClick, disabled, small, faceDown, announced 
   );
 }
 
-// ─── HomeScreen ────────────────────────────────────────────────────────────
 function HomeScreen({ onHost, onJoin }) {
   const [roomId, setRoomId] = useState("");
   const [name, setName] = useState("");
@@ -221,7 +211,6 @@ function HomeScreen({ onHost, onJoin }) {
   );
 }
 
-// ─── LobbyScreen ──────────────────────────────────────────────────────────────
 function LobbyScreen({ room, roomId, myId, onStart }) {
   const players = Object.values(room.players || {});
   const isHost = players[0]?.id === myId;
@@ -255,7 +244,6 @@ function LobbyScreen({ room, roomId, myId, onStart }) {
   );
 }
 
-// ─── Main Game Screen ─────────────────────────────────────────────────────────
 function GameScreen({ room, roomId, myId }) {
   const [passCards, setPassCards] = useState([]);
   const players = Object.values(room.players || {}).sort((a, b) => a.seat - b.seat);
@@ -344,7 +332,6 @@ function GameScreen({ room, roomId, myId }) {
     const newLeadSuit = trick.length === 0 ? card.suit : leadSuit;
 
     if (newTrick.length === 6) {
-      // الفائز التلقائي الأول في الترتيب كحماية مدمجة
       const winnerId = newTrick[0].playerId;
       playVIPSound("trick_win");
       const winnerSnap = await get(ref(db, `rooms/${roomId}/piles/${winnerId}`));
@@ -410,7 +397,6 @@ function GameScreen({ room, roomId, myId }) {
     c.id === "JOKER" || c.id === "MIKER" || c.rank === "Q" || c.rank === "10"
   );
   const [announceSelected, setAnnounceSelected] = useState([]);
-  const lastRound = room.lastRoundScores;
   const angles = [90, 30, 330, 270, 210, 150];
 
   return (
@@ -421,7 +407,6 @@ function GameScreen({ room, roomId, myId }) {
       padding: "10px", gap: 10, direction: "rtl", boxSizing: "border-box"
     }}>
       
-      {/* VIP Top Panel */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", maxWidth: 600, borderBottom: "2px solid #d4af37", paddingBottom: 6 }}>
         <div>
           <h2 style={{ color: "#ffe066", margin: 0, fontSize: "1.25rem", fontWeight: "900" }}>مجلس السبيته VIP</h2>
@@ -431,7 +416,6 @@ function GameScreen({ room, roomId, myId }) {
         </div>
       </div>
 
-      {/* لوحة نقاط اللاعبين */}
       <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "center", width: "100%", maxWidth: 600 }}>
         {players.map((p, i) => (
           <div key={p.id} style={{
@@ -447,7 +431,6 @@ function GameScreen({ room, roomId, myId }) {
         ))}
       </div>
 
-      {/* الطاولة المستديرة هندسياً */}
       {phase === "playing" && (
         <div style={{
           position: "relative",
@@ -508,7 +491,6 @@ function GameScreen({ room, roomId, myId }) {
         </div>
       )}
 
-      {/* المراحل والأزرار */}
       {phase === "passing" && !myPassDone && (
         <div style={phaseBox}>
           <div style={phaseTitle}>📤 مرحلة الترحيل: اختر 3 أوراق لترحيلها</div>
@@ -553,7 +535,6 @@ function GameScreen({ room, roomId, myId }) {
         <div style={phaseBox}><div style={{ color: "#2ed573" }}>بانتظار إعلانات بقية المجلس...</div></div>
       )}
 
-      {/* أوراق اليد */}
       {phase === "playing" && (
         <div style={{ width: "100%", maxWidth: 500, background: "rgba(255,255,255,0.02)", borderRadius: 16, padding: 12 }}>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "center" }}>
@@ -564,7 +545,6 @@ function GameScreen({ room, roomId, myId }) {
         </div>
       )}
 
-      {/* لوحة نهاية الجولة */}
       {(phase === "roundEnd" || phase === "gameEnd") && (
         <div style={phaseBox}>
           <div style={phaseTitle}>{phase === "gameEnd" ? "🏆 انتهت اللعبة الملكية!" : "🎴 جرد نقاط الجولة"}</div>
@@ -577,7 +557,6 @@ function GameScreen({ room, roomId, myId }) {
   );
 }
 
-// ─── الأنماط الفاخرة ──────────────────────────────────────────────────────────
 const inputStyle = { background: "rgba(0, 0, 0, 0.45)", border: "1px solid rgba(212,175,55,0.45)", borderRadius: 12, padding: "14px 16px", color: "#ffffff", width: "100%", boxSizing: "border-box", textAlign: "right" };
 const btnGold = { background: "linear-gradient(135deg, #ffe066 0%, #f5b041 100%)", border: "none", borderRadius: 12, padding: "14px 24px", color: "#0b1015", fontWeight: 900, cursor: "pointer", width: "100%" };
 const btnOutline = { background: "transparent", border: "1px solid rgba(212,175,55,0.45)", borderRadius: 12, padding: "12px 24px", color: "#ffe066", fontWeight: 700, cursor: "pointer", width: "100%" };
