@@ -1,56 +1,97 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, set, onValue, update, get } from "firebase/database";
 import { firebaseConfig } from "./firebase.config";
 import {
-  makeDeck, shuffle, trickWinner, cardPoints, trickPoints,
-  validCards, calcRoundScores, passTarget
+  makeDeck, shuffle, trickWinner, calcRoundScores, passTarget, validCards
 } from "./gameLogic";
 
 // ─── Firebase Init ────────────────────────────────────────────────────────────
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
+// ─── نظام المؤثرات الصوتية الملكي (VIP Audio Engine) ─────────────────────────
+const playVIPSound = (type) => {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const audioCtx = new AudioContext();
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    if (type === "card_play") {
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(320, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(70, audioCtx.currentTime + 0.15);
+      gainNode.gain.setValueAtTime(0.25, audioCtx.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.15);
+    } else if (type === "trick_win") {
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(523.25, audioCtx.currentTime);
+      osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.1);
+      gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.001, audioCtx.currentTime + 0.35);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.35);
+    } else if (type === "shuffle") {
+      for (let i = 0; i < 7; i++) {
+        const timeOffset = i * 0.07;
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.connect(g);
+        g.connect(audioCtx.destination);
+        o.type = "sawtooth";
+        o.frequency.setValueAtTime(140 + (i * 35), audioCtx.currentTime + timeOffset);
+        g.gain.setValueAtTime(0.06, audioCtx.currentTime + timeOffset);
+        g.gain.linearRampToValueAtTime(0.001, audioCtx.currentTime + timeOffset + 0.05);
+        o.start(audioCtx.currentTime + timeOffset);
+        o.stop(audioCtx.currentTime + timeOffset + 0.05);
+      }
+    }
+  } catch (e) {
+    console.log("Audio error:", e);
+  }
+};
+
 // ─── Card Component ───────────────────────────────────────────────────────────
 function CardUI({ card, selected, onClick, disabled, small, faceDown, announced }) {
   if (!card) return null;
   const isRed = card.suit === "♥" || card.suit === "♦";
-  const isSpecial = card.isSpecial;
+  const isSpecial = card.isSpecial || card.id === "JOKER" || card.id === "MIKER";
   const isAnnounced = announced && announced[card.id];
 
   return (
     <div
       onClick={disabled ? undefined : onClick}
       style={{
-        width: small ? 46 : 62,
-        height: small ? 68 : 92,
+        width: small ? 46 : 64,
+        height: small ? 68 : 94,
         borderRadius: 10,
         background: faceDown
-          ? "linear-gradient(135deg,#1a3a2a,#0d2018)"
+          ? "linear-gradient(135deg, #8a1616, #400404)"
           : isSpecial
-            ? card.id === "JOKER"
-              ? "linear-gradient(135deg,#2a0a4a,#4a1a8a)"
-              : "linear-gradient(135deg,#4a2a0a,#8a5a1a)"
-            : "linear-gradient(160deg,#fffef5 80%,#f5f0e0)",
+            ? "linear-gradient(135deg, #192a56, #273c75)"
+            : "linear-gradient(160deg, #ffffff 85%, #f5f6fa)",
         border: selected
-          ? "2.5px solid #ffd700"
+          ? "3px solid #ffca28"
           : isAnnounced
-            ? "2.5px solid #ff6b35"
-            : isSpecial
-              ? "1.5px solid rgba(255,255,255,0.3)"
-              : "1.5px solid #ccc",
+            ? "2.5px solid #e17055"
+            : "1.5px solid #dcdde1",
         boxShadow: selected
-          ? "0 0 16px rgba(255,215,0,0.9), 0 4px 12px rgba(0,0,0,0.5)"
-          : isAnnounced
-            ? "0 0 12px rgba(255,107,53,0.7)"
-            : "0 3px 8px rgba(0,0,0,0.4)",
+          ? "0 0 15px rgba(255,202,40,0.85), 0 4px 10px rgba(0,0,0,0.6)"
+          : "0 3px 6px rgba(0,0,0,0.35)",
         cursor: disabled ? "default" : "pointer",
         display: "flex",
         flexDirection: "column",
         justifyContent: "space-between",
-        padding: "3px 4px",
-        transition: "transform 0.15s, box-shadow 0.15s",
-        transform: selected ? "translateY(-14px)" : "translateY(0)",
+        padding: "5px 6px",
+        transition: "all 0.15s ease-in-out",
+        transform: selected ? "translateY(-10px) scale(1.03)" : "translateY(0)",
         userSelect: "none",
         flexShrink: 0,
         position: "relative",
@@ -59,35 +100,27 @@ function CardUI({ card, selected, onClick, disabled, small, faceDown, announced 
       {faceDown ? (
         <div style={{
           position: "absolute", inset: 4, borderRadius: 6,
-          background: "repeating-linear-gradient(45deg,#1d4530,#1d4530 4px,#153824 4px,#153824 8px)",
+          border: "1px solid rgba(255,215,0,0.25)",
+          background: "repeating-linear-gradient(45deg, #5c0606, #5c0606 3px, #360202 3px, #360202 6px)",
         }} />
-      ) : isSpecial ? (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 4 }}>
-          <div style={{ fontSize: small ? 18 : 26 }}>{card.suit}</div>
-          <div style={{ color: "white", fontSize: small ? 8 : 11, fontWeight: 700, textAlign: "center", letterSpacing: 0.5 }}>{card.rank}</div>
-          {isAnnounced && <div style={{ fontSize: 8, color: "#ff6b35" }}>معلن</div>}
-        </div>
       ) : (
         <>
-          <div style={{ fontSize: small ? 10 : 13, fontWeight: 700, color: isRed ? "#c0392b" : "#1a1a2e", lineHeight: 1.1 }}>
+          <div style={{ fontSize: small ? 10 : 12, fontWeight: 700, color: isRed ? "#c23616" : "#2f3640", lineHeight: 1.1, textAlign: "right" }}>
             {card.rank}<br />{card.suit}
           </div>
-          <div style={{ fontSize: small ? 16 : 22, textAlign: "center", color: isRed ? "#c0392b" : "#1a1a2e" }}>
+          <div style={{ fontSize: small ? 16 : 20, textAlign: "center", color: isRed ? "#c23616" : "#2f3640" }}>
             {card.suit}
           </div>
-          <div style={{ fontSize: small ? 10 : 13, fontWeight: 700, color: isRed ? "#c0392b" : "#1a1a2e", alignSelf: "flex-end", transform: "rotate(180deg)", lineHeight: 1.1 }}>
+          <div style={{ fontSize: small ? 10 : 12, fontWeight: 700, color: isRed ? "#c23616" : "#2f3640", alignSelf: "flex-end", transform: "rotate(180deg)", lineHeight: 1.1 }}>
             {card.rank}<br />{card.suit}
           </div>
-          {isAnnounced && (
-            <div style={{ position: "absolute", top: 2, right: 2, background: "#ff6b35", borderRadius: 4, fontSize: 7, color: "white", padding: "1px 3px" }}>معلن</div>
-          )}
         </>
       )}
     </div>
   );
 }
 
-// ─── Screens ──────────────────────────────────────────────────────────────────
+// ─── HomeScreen ────────────────────────────────────────────────────────────
 function HomeScreen({ onHost, onJoin }) {
   const [roomId, setRoomId] = useState("");
   const [name, setName] = useState("");
@@ -96,29 +129,31 @@ function HomeScreen({ onHost, onJoin }) {
   return (
     <div style={{
       minHeight: "100vh",
-      background: "radial-gradient(ellipse at 30% 20%, #1a0a00 0%, #0d0500 50%, #000 100%)",
-      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-      padding: 20, gap: 24,
+      background: "radial-gradient(circle at center, #1b262c 0%, #0f171e 100%)",
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between",
+      padding: "50px 20px", boxSizing: "border-box", direction: "rtl"
     }}>
+      <div />
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 56, marginBottom: 8 }}>🃏</div>
+        <div style={{ fontSize: 65, marginBottom: 5, filter: "drop-shadow(0 4px 8px rgba(255,215,0,0.3))" }}>🏆</div>
         <h1 style={{
-          margin: 0, fontSize: "clamp(2rem,7vw,3.5rem)", fontWeight: 900,
-          color: "#ffd700", textShadow: "0 0 40px rgba(255,215,0,0.5)",
-          letterSpacing: 6, fontFamily: "Georgia, serif",
-        }}>سبيته</h1>
-        <p style={{ color: "#8a6a3a", margin: "8px 0 0", letterSpacing: 4, fontSize: "0.8rem" }}>SABITA • لعبة الورق</p>
+          margin: 0, fontSize: "clamp(2.5rem, 6.5vw, 3.6rem)", fontWeight: 900,
+          background: "linear-gradient(135deg, #ffe066 0%, #f5b041 50%, #c97924 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+        }}>لعبة السبيته</h1>
+        <p style={{ color: "#7f8c8d", margin: "6px 0 0", fontSize: "0.85rem", fontWeight: "600" }}>
+          برعاية <span style={{ color: "#f5b041", fontWeight: "800" }}>good guys group</span>
+        </p>
       </div>
 
       <div style={{
-        background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,215,0,0.2)",
-        borderRadius: 20, padding: "28px 32px", width: "100%", maxWidth: 360,
-        display: "flex", flexDirection: "column", gap: 16,
+        background: "rgba(255,255,255,0.02)", border: "2px solid #d4af37",
+        borderRadius: 20, padding: "35px 25px", width: "100%", maxWidth: 390,
+        display: "flex", flexDirection: "column", gap: 16, backdropFilter: "blur(15px)",
       }}>
         <input
           value={name}
           onChange={e => setName(e.target.value)}
-          placeholder="اسمك"
+          placeholder="👤 أدخل اسمك هنا..."
           maxLength={12}
           style={inputStyle}
         />
@@ -126,10 +161,10 @@ function HomeScreen({ onHost, onJoin }) {
         {!joining ? (
           <>
             <button onClick={() => name.trim() && onHost(name.trim())} style={btnGold} disabled={!name.trim()}>
-              🏠 إنشاء غرفة جديدة
+              👑 إنشاء مجلس جديد (VIP)
             </button>
             <button onClick={() => setJoining(true)} style={btnOutline}>
-              🔗 الانضمام لغرفة
+              💬 انضمام لجلسة سابقة
             </button>
           </>
         ) : (
@@ -137,76 +172,51 @@ function HomeScreen({ onHost, onJoin }) {
             <input
               value={roomId}
               onChange={e => setRoomId(e.target.value.toUpperCase())}
-              placeholder="كود الغرفة"
+              placeholder="كود الدخول"
               maxLength={6}
-              style={{ ...inputStyle, letterSpacing: 6, textAlign: "center", fontSize: "1.2rem" }}
+              style={{ ...inputStyle, letterSpacing: 5, textAlign: "center", fontSize: "1.2rem", fontWeight: "700" }}
             />
             <button onClick={() => name.trim() && roomId.length === 6 && onJoin(name.trim(), roomId)} style={btnGold} disabled={!name.trim() || roomId.length !== 6}>
-              ✅ انضم
+              ♦ دخول الجلسة الآن
             </button>
-            <button onClick={() => setJoining(false)} style={btnOutline}>← رجوع</button>
+            <button onClick={() => setJoining(false)} style={btnOutline}>تراجع</button>
           </>
         )}
       </div>
+      <div style={{ color: "rgba(212,175,55,0.6)", fontSize: "0.8rem", fontFamily: "monospace" }}>برمجة alreshdy</div>
     </div>
   );
 }
 
+// ─── LobbyScreen ──────────────────────────────────────────────────────────────
 function LobbyScreen({ room, roomId, myId, onStart }) {
   const players = Object.values(room.players || {});
   const isHost = players[0]?.id === myId;
-  const teams = [
-    players.filter((_, i) => i % 2 === 0),
-    players.filter((_, i) => i % 2 === 1),
-  ];
 
   return (
     <div style={{
       minHeight: "100vh",
-      background: "radial-gradient(ellipse at 30% 20%, #1a0a00 0%, #0d0500 50%, #000 100%)",
-      display: "flex", flexDirection: "column", alignItems: "center", padding: "30px 16px", gap: 20,
+      background: "radial-gradient(circle at center, #1b262c 0%, #0f171e 100%)",
+      display: "flex", flexDirection: "column", alignItems: "center", padding: "40px 20px", gap: 20, direction: "rtl"
     }}>
-      <h1 style={{ color: "#ffd700", fontFamily: "Georgia, serif", fontSize: "2rem", margin: 0 }}>🃏 سبيته</h1>
-
-      <div style={{ background: "rgba(255,215,0,0.08)", border: "2px solid rgba(255,215,0,0.3)", borderRadius: 16, padding: "16px 32px", textAlign: "center" }}>
-        <div style={{ color: "#8a6a3a", fontSize: "0.75rem", letterSpacing: 3, marginBottom: 4 }}>كود الغرفة</div>
-        <div style={{ color: "#ffd700", fontSize: "2.5rem", fontWeight: 900, letterSpacing: 8 }}>{roomId}</div>
-        <div style={{ color: "#8a6a3a", fontSize: "0.7rem" }}>شارك الكود مع أصحابك</div>
+      <h1 style={{ color: "#f5b041", fontSize: "1.9rem", margin: 0, fontWeight: "900" }}>مجلس السبيته VIP</h1>
+      <div style={{ background: "rgba(212,175,55,0.04)", border: "1px solid #d4af37", borderRadius: 16, padding: "15px 35px", textAlign: "center" }}>
+        <div style={{ color: "#ffe066", fontSize: "2.2rem", fontWeight: 900, letterSpacing: 4 }}>{roomId}</div>
       </div>
 
       <div style={{ width: "100%", maxWidth: 400, display: "flex", flexDirection: "column", gap: 12 }}>
-        <div style={{ color: "#8a6a3a", fontSize: "0.75rem", textAlign: "center", letterSpacing: 2 }}>
-          اللاعبون ({players.length}/6) — الترتيب: خصم صديق خصم صديق خصم صديق
-        </div>
         {players.map((p, i) => (
           <div key={p.id} style={{
             display: "flex", alignItems: "center", gap: 12,
-            background: i % 2 === 0 ? "rgba(255,80,80,0.08)" : "rgba(80,200,80,0.08)",
-            border: `1px solid ${i % 2 === 0 ? "rgba(255,80,80,0.2)" : "rgba(80,200,80,0.2)"}`,
-            borderRadius: 12, padding: "10px 16px",
+            background: "rgba(255,255,255,0.02)", border: "1px solid rgba(212,175,55,0.2)", borderRadius: 12, padding: "12px 18px",
           }}>
-            <div style={{ fontSize: "1.4rem" }}>{i % 2 === 0 ? "🔴" : "🟢"}</div>
-            <div>
-              <div style={{ color: "#e8d5a0", fontWeight: 700 }}>{p.name} {p.id === myId ? "(أنت)" : ""}</div>
-              <div style={{ color: "#8a6a3a", fontSize: "0.7rem" }}>{i % 2 === 0 ? "الفريق الأحمر" : "الفريق الأخضر"} • مقعد {i + 1}</div>
-            </div>
-            {i === 0 && <div style={{ marginLeft: "auto", color: "#ffd700", fontSize: "0.75rem" }}>👑 المضيف</div>}
+            <div style={{ color: "#ffffff", fontWeight: 700 }}>{p.name} {p.id === myId ? "(أنت)" : ""}</div>
           </div>
         ))}
-        {players.length < 6 && (
-          <div style={{ color: "#8a6a3a", fontSize: "0.75rem", textAlign: "center" }}>
-            في انتظار {6 - players.length} لاعب آخر...
-          </div>
-        )}
       </div>
 
       {isHost && players.length === 6 && (
-        <button onClick={onStart} style={{ ...btnGold, maxWidth: 300, width: "100%", fontSize: "1.1rem", padding: "14px" }}>
-          🚀 ابدأ اللعبة
-        </button>
-      )}
-      {isHost && players.length < 6 && (
-        <div style={{ color: "#8a6a3a", fontSize: "0.8rem" }}>انتظر حتى ينضم 6 لاعبين لتبدأ</div>
+        <button onClick={onStart} style={btnGold}>🚀 ابدأ اللعبة الآن</button>
       )}
     </div>
   );
@@ -214,25 +224,30 @@ function LobbyScreen({ room, roomId, myId, onStart }) {
 
 // ─── Main Game Screen ─────────────────────────────────────────────────────────
 function GameScreen({ room, roomId, myId }) {
-  const [selectedCards, setSelectedCards] = useState([]);
   const [passCards, setPassCards] = useState([]);
-  const [announcing, setAnnouncing] = useState(false);
-
   const players = Object.values(room.players || {}).sort((a, b) => a.seat - b.seat);
-  const me = players.find(p => p.id === myId);
+  const me = players.find(p => p.id === myId) || { id: myId, name: "لاعب", seat: 0 };
   const myHand = (room.hands && room.hands[myId]) || [];
-  const phase = room.phase; // 'passing' | 'announcing' | 'playing' | 'roundEnd' | 'gameEnd'
+  const phase = room.phase; 
   const trick = room.trick || [];
   const announced = room.announced || {};
   const scores = room.scores || {};
   const leadSuit = room.leadSuit;
   const currentTurn = room.currentTurn;
+  const dealerId = room.dealerId || players[0]?.id; 
   const isMyTurn = currentTurn === myId;
 
   const myPassDone = room.passed && room.passed[myId];
   const myAnnounceDone = room.announceDone && room.announceDone[myId];
 
-  // ── Passing ──
+  const prevTrickLength = useRef(trick.length);
+  useEffect(() => {
+    if (trick.length > prevTrickLength.current) { playVIPSound("card_play"); }
+    prevTrickLength.current = trick.length;
+  }, [trick]);
+
+  useEffect(() => { if (phase === "passing") { playVIPSound("shuffle"); } }, [phase]);
+
   function togglePassCard(card) {
     if (passCards.find(c => c.id === card.id)) {
       setPassCards(passCards.filter(c => c.id !== card.id));
@@ -250,35 +265,31 @@ function GameScreen({ room, roomId, myId }) {
       [`passedCards/${myId}`]: passCards,
       [`passTarget/${myId}`]: targetPlayer.id,
     });
-    // Check if all passed
+    
     const snap = await get(ref(db, `rooms/${roomId}/passed`));
-    const passedAll = snap.val() && Object.keys(snap.val()).length === 6;
-    if (passedAll) {
-      // Apply passes
+    if (snap.val() && Object.keys(snap.val()).length === 6) {
       const psSnap = await get(ref(db, `rooms/${roomId}/passedCards`));
       const ptSnap = await get(ref(db, `rooms/${roomId}/passTarget`));
-      const passedCards = psSnap.val();
-      const passTargets = ptSnap.val();
+      const pCards = psSnap.val();
+      const pTargets = ptSnap.val();
       const handsSnap = await get(ref(db, `rooms/${roomId}/hands`));
-      const hands = handsSnap.val();
-      // Remove passed cards from senders, add to receivers
-      const newHands = { ...hands };
-      for (const senderId of Object.keys(passedCards)) {
-        const receiverId = passTargets[senderId];
-        const cards = passedCards[senderId];
+      const currentHands = handsSnap.val();
+
+      const newHands = { ...currentHands };
+      for (const senderId of Object.keys(pCards)) {
+        const receiverId = pTargets[senderId];
+        const cards = pCards[senderId];
         newHands[senderId] = newHands[senderId].filter(c => !cards.find(x => x.id === c.id));
         newHands[receiverId] = [...(newHands[receiverId] || []), ...cards];
       }
+
       await update(ref(db, `rooms/${roomId}`), {
-        hands: newHands,
-        phase: "announcing",
-        announceDone: {},
+        hands: newHands, phase: "announcing", announceDone: {},
       });
     }
     setPassCards([]);
   }
 
-  // ── Announcing ──
   async function submitAnnounce(cardIds) {
     const newAnnounced = { ...announced };
     for (const id of cardIds) newAnnounced[id] = true;
@@ -286,82 +297,62 @@ function GameScreen({ room, roomId, myId }) {
       [`announceDone/${myId}`]: true,
       announced: newAnnounced,
     });
-    setAnnouncing(false);
-    // Check if all announced
     const snap = await get(ref(db, `rooms/${roomId}/announceDone`));
     if (snap.val() && Object.keys(snap.val()).length === 6) {
       await update(ref(db, `rooms/${roomId}`), { phase: "playing" });
     }
   }
 
-  // ── Playing ──
   async function playCard(card) {
     if (!isMyTurn || phase !== "playing") return;
-    const valid = validCards(myHand, trick, leadSuit);
-    if (!valid.find(c => c.id === card.id)) return;
 
     const newTrick = [...trick, { playerId: myId, card }];
     const newHand = myHand.filter(c => c.id !== card.id);
     const newLeadSuit = trick.length === 0 ? card.suit : leadSuit;
 
     if (newTrick.length === 6) {
-      // Trick complete
+      // نعتمد هنا على دالة trickWinner الأساسية من ملفك الأصلي لضمان عدم حدوث شاشة سوداء
       const winnerId = trickWinner(newTrick, newLeadSuit);
+      playVIPSound("trick_win");
       const winnerSnap = await get(ref(db, `rooms/${roomId}/piles/${winnerId}`));
       const winnerPile = winnerSnap.val() || [];
       const newPile = [...winnerPile, ...newTrick.map(t => t.card)];
 
-      // Check if round over
       const allHandsSnap = await get(ref(db, `rooms/${roomId}/hands`));
       const allHands = allHandsSnap.val();
       allHands[myId] = newHand;
-      const roundOver = Object.values(allHands).every(h => h.length === 0);
+      const roundOver = Object.values(allHands).every(h => !h || h.length === 0);
 
       if (roundOver) {
-        // Calc scores
         const pilesSnap = await get(ref(db, `rooms/${roomId}/piles`));
         const piles = pilesSnap.val() || {};
         piles[winnerId] = newPile;
         const roundScores = calcRoundScores(piles, announced, players);
-        const currentScores = scores;
         const newScores = {};
         for (const p of players) {
-          newScores[p.id] = (currentScores[p.id] || 0) + (roundScores[p.id] || 0);
+          newScores[p.id] = (scores[p.id] || 0) + (roundScores[p.id] || 0);
         }
         const gameOver = Object.values(newScores).some(s => s >= 360);
         await update(ref(db, `rooms/${roomId}`), {
-          trick: [],
-          leadSuit: null,
-          piles: {},
-          [`hands/${myId}`]: newHand,
-          [`piles/${winnerId}`]: newPile,
-          scores: newScores,
-          lastRoundScores: roundScores,
-          phase: gameOver ? "gameEnd" : "roundEnd",
-          currentTurn: winnerId,
+          trick: [], leadSuit: null, piles: {},
+          [`hands/${myId}`]: newHand, [`piles/${winnerId}`]: newPile,
+          scores: newScores, lastRoundScores: roundScores,
+          phase: gameOver ? "gameEnd" : "roundEnd", currentTurn: winnerId,
         });
       } else {
-        // Next trick - winner leads
-        const nextSeat = (players.findIndex(p => p.id === winnerId));
         await update(ref(db, `rooms/${roomId}`), {
-          trick: [],
-          leadSuit: null,
-          [`hands/${myId}`]: newHand,
-          [`piles/${winnerId}`]: newPile,
-          currentTurn: winnerId,
-          lastTrickWinner: winnerId,
+          trick: [], leadSuit: null,
+          [`hands/${myId}`]: newHand, [`piles/${winnerId}`]: newPile,
+          currentTurn: winnerId, lastTrickWinner: winnerId,
         });
       }
     } else {
-      // Next player (counter-clockwise = seat - 1)
       const myIdx = players.findIndex(p => p.id === myId);
       const nextIdx = (myIdx - 1 + 6) % 6;
       const nextPlayer = players[nextIdx];
       await update(ref(db, `rooms/${roomId}`), {
-        trick: newTrick,
-        leadSuit: newLeadSuit,
-        [`hands/${myId}`]: newHand,
-        currentTurn: nextPlayer.id,
+        trick: newTrick, leadSuit: newLeadSuit,
+        [`hands/${myId}`]: newHand, currentTurn: nextPlayer.id,
       });
     }
   }
@@ -370,231 +361,191 @@ function GameScreen({ room, roomId, myId }) {
     const deck = shuffle(makeDeck());
     const hands = {};
     players.forEach((p, i) => { hands[p.id] = deck.slice(i * 9, i * 9 + 9); });
-    // Dealer: player with most points, next on right starts
-    const maxScore = Math.max(...players.map(p => scores[p.id] || 0));
-    const richest = players.find(p => (scores[p.id] || 0) === maxScore);
-    const richIdx = players.findIndex(p => p.id === richest.id);
-    const starterIdx = (richIdx + 1) % 6;
+    
+    const currentDealerIdx = players.findIndex(p => p.id === dealerId);
+    const nextDealerIdx = (currentDealerIdx + 1) % 6;
+    const nextDealer = players[nextDealerIdx] || players[0];
+    const starterIdx = (nextDealerIdx + 1) % 6;
+
     await update(ref(db, `rooms/${roomId}`), {
-      hands,
-      trick: [],
-      leadSuit: null,
-      piles: {},
-      passed: {},
-      passedCards: {},
-      passTarget: {},
-      announced: {},
-      announceDone: {},
-      phase: "passing",
-      currentTurn: players[starterIdx].id,
+      hands, trick: [], leadSuit: null, piles: {},
+      passed: {}, passedCards: {}, passTarget: {},
+      announced: {}, announceDone: {}, phase: "passing",
+      currentTurn: players[starterIdx].id, dealerId: nextDealer.id,
       lastRoundScores: null,
     });
     setPassCards([]);
   }
 
-  // ── Announce candidates in my hand ──
   const announceable = myHand.filter(c =>
-    c.id === "JOKER" || c.id === "MIKER" || c.isQueenSpades || c.isTenDiamonds
+    c.id === "JOKER" || c.id === "MIKER" || c.rank === "Q" || c.rank === "10"
   );
   const [announceSelected, setAnnounceSelected] = useState([]);
-
-  // ── Valid cards highlight ──
-  const valid = phase === "playing" && isMyTurn
-    ? validCards(myHand, trick, leadSuit).map(c => c.id)
-    : [];
-
+  const valid = phase === "playing" && isMyTurn ? validCards(myHand, trick, leadSuit).map(c => c.id) : [];
   const lastRound = room.lastRoundScores;
+  const angles = [90, 30, 330, 270, 210, 150];
 
-  // ── Render ──
   return (
     <div style={{
       minHeight: "100vh",
-      background: "radial-gradient(ellipse at 20% 10%, #1a0800 0%, #080300 60%, #000 100%)",
+      background: "radial-gradient(circle at center, #111d24 0%, #070c10 100%)",
       display: "flex", flexDirection: "column", alignItems: "center",
-      padding: "10px 8px", gap: 8, fontFamily: "Georgia, serif",
+      padding: "10px", gap: 10, direction: "rtl", boxSizing: "border-box"
     }}>
-      <style>{`
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
-        @keyframes slideUp { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }
-      `}</style>
-
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 16, width: "100%", maxWidth: 500 }}>
-        <h2 style={{ color: "#ffd700", margin: 0, fontSize: "1.3rem", flex: 1 }}>🃏 سبيته</h2>
-        <div style={{ color: "#8a6a3a", fontSize: "0.7rem" }}>غرفة: {roomId}</div>
+      
+      {/* VIP Top Panel */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", maxWidth: 600, borderBottom: "2px solid #d4af37", paddingBottom: 6 }}>
+        <div>
+          <h2 style={{ color: "#ffe066", margin: 0, fontSize: "1.25rem", fontWeight: "900" }}>مجلس السبيته VIP</h2>
+        </div>
+        <div style={{ background: "rgba(212,175,55,0.1)", border: "1px solid #d4af37", padding: "4px 10px", borderRadius: 8, color: "#ffe066", fontSize: "0.75rem" }}>
+          جلسة رقم: {roomId}
+        </div>
       </div>
 
-      {/* Scores */}
-      <div style={{
-        display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center",
-        width: "100%", maxWidth: 500,
-      }}>
+      {/* لوحة نقاط اللاعبين */}
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "center", width: "100%", maxWidth: 600 }}>
         {players.map((p, i) => (
           <div key={p.id} style={{
-            background: p.id === myId ? "rgba(255,215,0,0.12)" : "rgba(255,255,255,0.04)",
-            border: `1px solid ${i % 2 === 0 ? "rgba(255,80,80,0.3)" : "rgba(80,200,80,0.3)"}`,
-            borderRadius: 10, padding: "5px 10px", textAlign: "center", minWidth: 70,
+            background: p.id === myId ? "rgba(212,175,55,0.12)" : "rgba(255,255,255,0.02)",
+            border: currentTurn === p.id && phase === "playing" ? "2px solid #ffca28" : "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 10, padding: "5px 8px", textAlign: "center", minWidth: 82,
           }}>
-            <div style={{ fontSize: "0.65rem", color: i % 2 === 0 ? "#ff8080" : "#80ff80" }}>
-              {i % 2 === 0 ? "🔴" : "🟢"} {p.name} {p.id === myId ? "★" : ""}
+            <div style={{ fontSize: "0.68rem", color: "#ffffff", fontWeight: "700" }}>
+              {p.name} {dealerId === p.id ? "👑" : ""}
             </div>
-            <div style={{ color: "#ffd700", fontWeight: 700, fontSize: "1rem" }}>{scores[p.id] || 0}</div>
-            {currentTurn === p.id && phase === "playing" && (
-              <div style={{ fontSize: "0.6rem", color: "#ffd700", animation: "pulse 1s infinite" }}>دوره ▶</div>
-            )}
+            <div style={{ color: "#ffca28", fontWeight: 900, fontSize: "0.95rem" }}>{scores[p.id] || 0}</div>
           </div>
         ))}
       </div>
 
-      {/* ── PASSING PHASE ── */}
-      {phase === "passing" && !myPassDone && (
-        <div style={phaseBox}>
-          <div style={phaseTitle}>📤 اختر 3 أوراق لترحيلها يساراً</div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center" }}>
-            {myHand.map(c => (
-              <CardUI
-                key={c.id} card={c}
-                selected={!!passCards.find(x => x.id === c.id)}
-                onClick={() => togglePassCard(c)}
-                announced={announced}
-              />
-            ))}
-          </div>
-          <div style={{ color: "#8a6a3a", fontSize: "0.8rem" }}>محدد: {passCards.length}/3</div>
-          <button onClick={submitPass} style={btnGold} disabled={passCards.length !== 3}>
-            ✅ ترحيل الأوراق
-          </button>
-        </div>
-      )}
-      {phase === "passing" && myPassDone && (
-        <div style={phaseBox}>
-          <div style={{ color: "#7fc97f", fontSize: "1rem" }}>✅ تم الترحيل، في انتظار الآخرين...</div>
+      {/* ── الطاولة المستديرة المحمية ── */}
+      {phase === "playing" && (
+        <div style={{
+          position: "relative",
+          width: "min(92vw, 420px)",
+          height: "min(92vw, 420px)",
+          background: "radial-gradient(circle, #0e4e27 0%, #063318 75%, #021a0b 100%)", 
+          borderRadius: "50%",
+          border: "10px solid #2b1910", 
+          boxShadow: "0 12px 30px rgba(0,0,0,0.7), inset 0 0 25px rgba(0,0,0,0.85), 0 0 0 2px #d4af37",
+          margin: "15px 0",
+          display: "flex", alignItems: "center", justifyContent: "center"
+        }}>
+          {players.map((p, idx) => {
+            const angle = angles[idx];
+            const radius = 130; 
+            const x = Math.cos((angle * Math.PI) / 180) * radius;
+            const y = Math.sin((angle * Math.PI) / 180) * radius;
+
+            const trickItem = trick.find(t => t.playerId === p.id);
+            const isPlayerTurn = currentTurn === p.id;
+
+            return (
+              <div
+                key={p.id}
+                style={{
+                  position: "absolute",
+                  left: `calc(50% + ${x}px - 44px)`,
+                  top: `calc(50% - ${y}px - 54px)`,
+                  width: 88, height: 108,
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                  zIndex: isPlayerTurn ? 15 : 10,
+                }}
+              >
+                <div style={{ height: 72, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 3 }}>
+                  {trickItem ? (
+                    <div style={{ transform: `rotate(${(idx * 5) - 10}deg)` }}>
+                      <CardUI card={trickItem.card} disabled small announced={announced} />
+                    </div>
+                  ) : (
+                    <div style={{
+                      width: 40, height: 54, borderRadius: 6,
+                      border: isPlayerTurn ? "2px solid #ffca28" : "1.5px dashed rgba(255,255,255,0.08)",
+                      background: isPlayerTurn ? "rgba(255,202,40,0.04)" : "transparent",
+                    }} />
+                  )}
+                </div>
+
+                <div style={{
+                  background: isPlayerTurn ? "#ffca28" : "rgba(0,0,0,0.8)",
+                  color: isPlayerTurn ? "#000000" : "#ffffff",
+                  padding: "2px 6px", borderRadius: 6, fontSize: "0.62rem", fontWeight: "700", whiteSpace: "nowrap"
+                }}>
+                  {p.name}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* ── ANNOUNCING PHASE ── */}
+      {/* ── المراحل والأزرار ── */}
+      {phase === "passing" && !myPassDone && (
+        <div style={phaseBox}>
+          <div style={phaseTitle}>📤 مرحلة الترحيل: اختر 3 أوراق لترحيلها</div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "center" }}>
+            {myHand.map(c => (
+              <CardUI key={c.id} card={c} selected={!!passCards.find(x => x.id === c.id)} onClick={() => togglePassCard(c)} />
+            ))}
+          </div>
+          <button onClick={submitPass} style={btnGold} disabled={passCards.length !== 3}>تأكيد إرسال الأوراق ({passCards.length}/3)</button>
+        </div>
+      )}
+      {phase === "passing" && myPassDone && (
+        <div style={phaseBox}><div style={{ color: "#2ed573" }}>📬 تم الترحيل، ننتظر الآخرين...</div></div>
+      )}
+
       {phase === "announcing" && !myAnnounceDone && (
         <div style={phaseBox}>
-          <div style={phaseTitle}>📢 الإعلان (اختياري)</div>
-          <div style={{ color: "#8a6a3a", fontSize: "0.75rem", marginBottom: 8 }}>
-            الإعلان يضاعف نقاط الورقة — هل تعلن؟
-          </div>
+          <div style={phaseTitle}>📢 المشاريع المتوفرة لإعلانها</div>
           {announceable.length > 0 ? (
             <>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "center" }}>
                 {announceable.map(c => (
                   <div key={c.id} onClick={() => {
                     if (announceSelected.includes(c.id)) setAnnounceSelected(announceSelected.filter(x => x !== c.id));
                     else setAnnounceSelected([...announceSelected, c.id]);
                   }}>
-                    <CardUI card={c} selected={announceSelected.includes(c.id)} announced={announced} />
+                    <CardUI card={c} selected={announceSelected.includes(c.id)} />
                   </div>
                 ))}
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => submitAnnounce(announceSelected)} style={btnGold}>
-                  📢 أعلن المحدد
-                </button>
-                <button onClick={() => submitAnnounce([])} style={btnOutline}>
-                  تخطي
-                </button>
+              <div style={{ display: "flex", gap: 10, width: "100%" }}>
+                <button onClick={() => submitAnnounce(announceSelected)} style={btnGold}>📢 إعلان المشاريع</button>
+                <button onClick={() => submitAnnounce([])} style={btnOutline}>تخطي</button>
               </div>
             </>
           ) : (
-            <>
-              <div style={{ color: "#8a6a3a" }}>ليس لديك أوراق للإعلان</div>
-              <button onClick={() => submitAnnounce([])} style={btnGold}>متابعة ▶</button>
-            </>
+            <button onClick={() => submitAnnounce([])} style={btnGold}>دخول الساحة وبدء اللعب مباشر ▶</button>
           )}
         </div>
       )}
       {phase === "announcing" && myAnnounceDone && (
-        <div style={phaseBox}>
-          <div style={{ color: "#7fc97f" }}>✅ تم، في انتظار الآخرين...</div>
+        <div style={phaseBox}><div style={{ color: "#2ed573" }}>بانتظار إعلانات بقية المجلس...</div></div>
+      )}
+
+      {/* أوراق اليد الحية للمستخدم */}
+      {phase === "playing" && (
+        <div style={{ width: "100%", maxWidth: 500, background: "rgba(255,255,255,0.02)", borderRadius: 16, padding: 12 }}>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "center" }}>
+            {myHand.map(c => (
+              <CardUI
+                key={c.id} card={c}
+                onClick={() => playCard(c)}
+                disabled={!isMyTurn || (valid.length > 0 && !valid.includes(c.id))}
+              />
+            ))}
+          </div>
         </div>
       )}
 
-      {/* ── PLAYING PHASE ── */}
-      {phase === "playing" && (
-        <>
-          {/* Table / Trick */}
-          <div style={{
-            background: "radial-gradient(ellipse,#1a7a42 0%,#0d5c2f 60%,#07391d 100%)",
-            border: "3px solid #5a3a1a", borderRadius: 18,
-            padding: "12px 10px", width: "100%", maxWidth: 500,
-            minHeight: 100, display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
-          }}>
-            <div style={{ color: "rgba(255,255,255,0.3)", fontSize: "0.65rem", letterSpacing: 3 }}>— الطاولة —</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-              {trick.map((t, i) => {
-                const p = players.find(x => x.id === t.playerId);
-                return (
-                  <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                    <CardUI card={t.card} disabled small announced={announced} />
-                    <div style={{ color: "rgba(255,255,255,0.5)", fontSize: "0.6rem" }}>{p?.name}</div>
-                  </div>
-                );
-              })}
-              {trick.length === 0 && <div style={{ color: "rgba(255,255,255,0.2)", fontSize: "0.8rem", padding: "20px 0" }}>الطاولة فارغة</div>}
-            </div>
-          </div>
-
-          {/* My hand */}
-          <div style={{ width: "100%", maxWidth: 500 }}>
-            <div style={{ color: "#8a6a3a", fontSize: "0.7rem", textAlign: "center", marginBottom: 6 }}>
-              {isMyTurn ? "🟡 دورك! العب ورقة" : "دور " + players.find(p => p.id === currentTurn)?.name}
-            </div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center" }}>
-              {myHand.map(c => (
-                <CardUI
-                  key={c.id} card={c}
-                  onClick={() => playCard(c)}
-                  disabled={!isMyTurn || !valid.includes(c.id)}
-                  selected={selectedCards.includes(c.id)}
-                  announced={announced}
-                />
-              ))}
-            </div>
-            {isMyTurn && valid.length === 0 && myHand.length > 0 && (
-              <div style={{ color: "#ff8080", fontSize: "0.75rem", textAlign: "center", marginTop: 6 }}>
-                يمكنك لعب أي ورقة
-              </div>
-            )}
-          </div>
-        </>
-      )}
-
-      {/* ── ROUND END ── */}
+      {/* لوحة نهاية الشوط والجولة */}
       {(phase === "roundEnd" || phase === "gameEnd") && (
-        <div style={{ ...phaseBox, maxWidth: 420, width: "100%", animation: "slideUp 0.4s ease" }}>
-          <div style={phaseTitle}>{phase === "gameEnd" ? "🏆 انتهت اللعبة!" : "🎴 نهاية الجولة"}</div>
-          {lastRound && (
-            <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 6 }}>
-              {players.map((p, i) => (
-                <div key={p.id} style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
-                  background: "rgba(255,255,255,0.05)", borderRadius: 10, padding: "8px 14px",
-                  border: `1px solid ${i % 2 === 0 ? "rgba(255,80,80,0.2)" : "rgba(80,200,80,0.2)"}`,
-                }}>
-                  <div style={{ color: "#e8d5a0" }}>{i % 2 === 0 ? "🔴" : "🟢"} {p.name}</div>
-                  <div style={{ display: "flex", gap: 16 }}>
-                    <div style={{ color: "#ff8080", fontSize: "0.85rem" }}>+{lastRound[p.id] || 0}</div>
-                    <div style={{ color: "#ffd700", fontWeight: 700 }}>{scores[p.id] || 0}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {phase === "gameEnd" && (
-            <div style={{ color: "#ffd700", fontWeight: 700, fontSize: "1.1rem", textAlign: "center" }}>
-              الفائز: {players.reduce((a, b) => (scores[a.id] || 0) < (scores[b.id] || 0) ? a : b).name} 🥇
-            </div>
-          )}
+        <div style={phaseBox}>
+          <div style={phaseTitle}>{phase === "gameEnd" ? "🏆 انتهت اللعبة الملكية!" : "🎴 جرد نقاط الجولة"}</div>
           {phase === "roundEnd" && myId === players[0]?.id && (
-            <button onClick={nextRound} style={btnGold}>▶ الجولة التالية</button>
-          )}
-          {phase === "roundEnd" && myId !== players[0]?.id && (
-            <div style={{ color: "#8a6a3a", fontSize: "0.8rem" }}>في انتظار المضيف لبدء الجولة...</div>
+            <button onClick={nextRound} style={btnGold}>◀ افتح الجولة التالية</button>
           )}
         </div>
       )}
@@ -602,42 +553,17 @@ function GameScreen({ room, roomId, myId }) {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-const inputStyle = {
-  background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,215,0,0.2)",
-  borderRadius: 12, padding: "12px 16px", color: "#e8d5a0", fontSize: "1rem",
-  outline: "none", width: "100%", boxSizing: "border-box", textAlign: "right",
-  fontFamily: "Georgia, serif",
-};
-const btnGold = {
-  background: "linear-gradient(135deg,#ffd700,#f0a500)", border: "none",
-  borderRadius: 12, padding: "12px 24px", color: "#1a0a00",
-  fontWeight: 700, fontSize: "1rem", cursor: "pointer",
-  boxShadow: "0 4px 16px rgba(255,215,0,0.4)", fontFamily: "Georgia, serif",
-  width: "100%",
-};
-const btnOutline = {
-  background: "transparent", border: "1px solid rgba(255,215,0,0.3)",
-  borderRadius: 12, padding: "12px 24px", color: "#ffd700",
-  fontWeight: 600, fontSize: "0.95rem", cursor: "pointer",
-  fontFamily: "Georgia, serif", width: "100%",
-};
-const phaseBox = {
-  background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,215,0,0.2)",
-  borderRadius: 18, padding: "20px 16px", width: "100%", maxWidth: 500,
-  display: "flex", flexDirection: "column", alignItems: "center", gap: 14,
-};
-const phaseTitle = {
-  color: "#ffd700", fontWeight: 700, fontSize: "1.1rem", textAlign: "center",
-};
+// ─── الأنماط الفاخرة الموحدة ──────────────────────────────────────────────────
+const inputStyle = { background: "rgba(0, 0, 0, 0.45)", border: "1px solid rgba(212,175,55,0.45)", borderRadius: 12, padding: "14px 16px", color: "#ffffff", width: "100%", boxSizing: "border-box", textAlign: "right" };
+const btnGold = { background: "linear-gradient(135deg, #ffe066 0%, #f5b041 100%)", border: "none", borderRadius: 12, padding: "14px 24px", color: "#0b1015", fontWeight: 900, cursor: "pointer", width: "100%" };
+const btnOutline = { background: "transparent", border: "1px solid rgba(212,175,55,0.45)", borderRadius: 12, padding: "12px 24px", color: "#ffe066", fontWeight: 700, cursor: "pointer", width: "100%" };
+const phaseBox = { background: "rgba(0,0,0,0.45)", border: "1px solid #d4af37", borderRadius: 16, padding: "20px", width: "100%", maxWidth: 500, display: "flex", flexDirection: "column", alignItems: "center", gap: 12 };
+const phaseTitle = { color: "#ffe066", fontWeight: 900, fontSize: "1.05rem" };
 
-// ─── Root App ─────────────────────────────────────────────────────────────────
-function generateRoomId() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
-}
+function generateRoomId() { return Math.random().toString(36).substring(2, 8).toUpperCase(); }
 
 export default function App() {
-  const [screen, setScreen] = useState("home"); // home | lobby | game
+  const [screen, setScreen] = useState("home"); 
   const [roomId, setRoomId] = useState(null);
   const [myId, setMyId] = useState(null);
   const [room, setRoom] = useState(null);
@@ -659,27 +585,21 @@ export default function App() {
   async function hostRoom(name) {
     const id = generateRoomId();
     const playerId = `p_${Date.now()}`;
-    const deck = shuffle(makeDeck());
     setMyId(playerId);
     setRoomId(id);
     await set(ref(db, `rooms/${id}`), {
       phase: "lobby",
-      players: {
-        [playerId]: { id: playerId, name, seat: 0 },
-      },
-      scores: {},
-      trick: [],
-      leadSuit: null,
-      announced: {},
+      players: { [playerId]: { id: playerId, name, seat: 0 } },
+      scores: {}, trick: [], leadSuit: null, announced: {}, dealerId: playerId
     });
   }
 
   async function joinRoom(name, id) {
     const snap = await get(ref(db, `rooms/${id}`));
     const data = snap.val();
-    if (!data) return alert("الغرفة غير موجودة!");
+    if (!data) return alert("الجلسة غير موجودة!");
     const existing = Object.values(data.players || {});
-    if (existing.length >= 6) return alert("الغرفة ممتلئة!");
+    if (existing.length >= 6) return alert("المجلس ممتلئ!");
     const playerId = `p_${Date.now()}`;
     setMyId(playerId);
     setRoomId(id);
@@ -689,29 +609,21 @@ export default function App() {
   }
 
   async function startGame() {
-    const players = Object.values(room.players).sort((a, b) => a.seat - b.seat);
+    const currentPlayers = Object.values(room.players).sort((a, b) => a.seat - b.seat);
     const deck = shuffle(makeDeck());
-    // 54 cards / 6 players = 9 cards each
     const hands = {};
-    players.forEach((p, i) => { hands[p.id] = deck.slice(i * 9, i * 9 + 9); });
+    currentPlayers.forEach((p, i) => { hands[p.id] = deck.slice(i * 9, i * 9 + 9); });
+
     await update(ref(db, `rooms/${roomId}`), {
-      hands,
-      phase: "passing",
-      trick: [],
-      leadSuit: null,
-      piles: {},
-      passed: {},
-      passedCards: {},
-      passTarget: {},
-      announced: {},
-      announceDone: {},
-      scores: Object.fromEntries(players.map(p => [p.id, 0])),
-      currentTurn: players[0].id,
+      hands, phase: "passing", trick: [], leadSuit: null, piles: {},
+      passed: {}, passedCards: {}, passTarget: {}, announced: {}, announceDone: {},
+      scores: Object.fromEntries(currentPlayers.map(p => [p.id, 0])),
+      currentTurn: currentPlayers[0].id,
     });
   }
 
   if (screen === "home") return <HomeScreen onHost={hostRoom} onJoin={joinRoom} />;
   if (screen === "lobby" && room) return <LobbyScreen room={room} roomId={roomId} myId={myId} onStart={startGame} />;
   if (screen === "game" && room) return <GameScreen room={room} roomId={roomId} myId={myId} />;
-  return <div style={{ color: "white", textAlign: "center", padding: 40 }}>جاري التحميل...</div>;
+  return <div style={{ color: "#f5b041", textAlign: "center", padding: 60 }}>جاري التجهيز...</div>;
 }
