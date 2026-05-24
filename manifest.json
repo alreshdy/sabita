@@ -1,0 +1,11 @@
+{
+  "short_name": "سبيته",
+  "name": "سبيته - لعبة الورق",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#0d0500",
+  "background_color": "#000000",
+  "icons": [
+    { "src": "favicon.ico", "sizes": "64x64", "type": "image/x-icon" }
+  ]
+}
